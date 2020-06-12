@@ -38,13 +38,11 @@ class Slot:
 
 
 class engine(object):
-    def __init__(self, topic=None, fun=None, pool_size=default.POOL_SIZE, scheduler=Scheduler, settings=None,
+    def __init__(self, topic=None, scheduler=Scheduler, settings=None,
                  ip_ext=False, headers=None, ext=False, db_type=None, *args, **kwargs):
         super(engine, self).__init__(*args, **kwargs)
         self.logger = logging.getLogger()
         self.topic = topic
-        self.fun = fun
-        self.pool_size = pool_size
         self._scheduler = scheduler
         self.slot = None
         self.settings = SettingsWrapper().load(default=settings)
