@@ -7,7 +7,7 @@ from twisted.internet import defer, reactor
 from twisted.internet import task
 from twisted.internet import threads
 from twisted.internet.endpoints import TCP4ClientEndpoint
-from twisted.web.client import Agent, readBody, ProxyAgent
+from twisted.web.client import Agent, readBody, ProxyAgent, RedirectAgent
 from twisted.web.http_headers import Headers
 
 import kspifka.kafka_default_settings as defaults
@@ -122,7 +122,7 @@ class engine(object):
         if self.ip_ext:
             self.ip_ext_get()
             endpoint = TCP4ClientEndpoint(reactor, self.ip.split(':')[0], int(self.ip.split(':')[1]))
-            agent = ProxyAgent(endpoint)
+            agent = RedirectAgent(ProxyAgent(endpoint))
             response = agent.request(b"GET", request.encode('utf-8'), Headers(self.headers or {'User-Agent': []}))
             timeoutCall = reactor.callLater(self.settings.get('DOWNLOAD_TIMEOUT', 5), response.cancel)
 
@@ -134,7 +134,7 @@ class engine(object):
             response.addBoth(completed)
             return response
         else:
-            agent = Agent(reactor)
+            agent = RedirectAgent(Agent(reactor))
             response = agent.request(b'GET', request.encode('utf-8'),
                                      Headers(self.headers or {'User-Agent': []}), None)
             timeoutCall = reactor.callLater(self.settings.get('DOWNLOAD_TIMEOUT', 5), response.cancel)
