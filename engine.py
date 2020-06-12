@@ -124,11 +124,27 @@ class engine(object):
             endpoint = TCP4ClientEndpoint(reactor, self.ip.split(':')[0], int(self.ip.split(':')[1]))
             agent = ProxyAgent(endpoint)
             response = agent.request(b"GET", request.encode('utf-8'), Headers(self.headers or {'User-Agent': []}))
+            timeoutCall = reactor.callLater(1, response.cancel)
+
+            def completed(passthrough):
+                if timeoutCall.active():
+                    timeoutCall.cancel()
+                return passthrough
+
+            response.addBoth(completed)
             return response
         else:
             agent = Agent(reactor)
             response = agent.request(b'GET', request.encode('utf-8'),
                                      Headers(self.headers or {'User-Agent': []}), None)
+            timeoutCall = reactor.callLater(1, response.cancel)
+
+            def completed(passthrough):
+                if timeoutCall.active():
+                    timeoutCall.cancel()
+                return passthrough
+
+            response.addBoth(completed)
             return response
 
     def _start(self):
@@ -144,7 +160,6 @@ class engine(object):
         self.slot_retry = Slot(nextcall_retry)
         self.loop_retry = self.slot_retry.heartbeat
         self.loop_retry_ = self.loop_retry.start(0.1)
-
 
     def next_fetch(self):
         url = self.scheduler.next_request()
