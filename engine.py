@@ -1,8 +1,10 @@
 import logging
 import random
 import time
+import traceback
 
 from confluent_kafka.cimpl import TopicPartition
+from twisted.enterprise import adbapi
 from twisted.internet import defer, reactor
 from twisted.internet import task
 from twisted.internet import threads
@@ -37,7 +39,7 @@ class Slot:
 
 class engine(object):
     def __init__(self, topic=None, fun=None, pool_size=default.POOL_SIZE, scheduler=Scheduler, settings=None,
-                 ip_ext=False, headers=None, ext=False, *args, **kwargs):
+                 ip_ext=False, headers=None, ext=False, db_type=None, *args, **kwargs):
         super(engine, self).__init__(*args, **kwargs)
         self.logger = logging.getLogger()
         self.topic = topic
@@ -57,8 +59,17 @@ class engine(object):
         self.ip = None
         self.ext = ext
         self.crawl_queue = set([])
+        self.logger = logging.getLogger(__name__)
+        self.db_type = db_type
 
     def set_up(self):
+        if self.db_type:
+            conn_kwargs = self.settings.get('conn_kwargs', default.conn_kwargs)
+            self.dbpool = adbapi.ConnectionPool(self.db_type,
+                                                charset=self.settings.get('CHARSET', 'utf8'),
+                                                use_unicode=self.settings.get('USE_UNICODE', True),
+                                                connect_timeout=self.settings.get('CONNECT_TIMEOUT', 5),
+                                                **conn_kwargs)
         self.server = get_redis(self.settings)
         self.scheduler = self._scheduler(self.server, self.settings)
         self.scheduler.open()
@@ -74,30 +85,26 @@ class engine(object):
             self._consume_offset = self.scheduler.queue.consumer.get_watermark_offsets(
                 partition=TopicPartition(topic=defaults.KAFKA_DEFAULTS_TOPIC,
                                          partition=self.scheduler.queue.partition))[1]
-            if self.consume_offset == self._consume_offset:
-                self.check_times += 1
-                if self.check_times >= 2:
-                    self.slot.close()
-                    self.slot_.close()
-                    if reactor.running:
-                        reactor.stop()
-            else:
-                self.consume_offset = self._consume_offset
+            self.close()
 
         elif isinstance(self.scheduler.queue.partition, list):
             self._consumers_offset = []
             for partition in self.scheduler.queue.partition:
                 self._consumers_offset.append(self.scheduler.queue.consumer.get_watermark_offsets(
                     partition=TopicPartition(topic=defaults.KAFKA_DEFAULTS_TOPIC, partition=partition))[1])
-            if self.consumers_offset == self._consumers_offset:
-                self.check_times += 1
-                if self.check_times >= 2:
-                    self.slot.close()
-                    self.slot_.close()
-                    if reactor.running:
-                        reactor.stop()
-            else:
-                self.consumers_offset = self._consumers_offset
+            self.close()
+
+    def close(self):
+        if self.consumers_offset == self._consumers_offset:
+            self.check_times += 1
+            if self.check_times >= 2:
+                self.slot.close()
+                self.slot_.close()
+                if reactor.running:
+                    self.dbpool.close()
+                    reactor.stop()
+        else:
+            self.consumers_offset = self._consumers_offset
 
     def open(self):
         self.set_up()
@@ -112,11 +119,39 @@ class engine(object):
     def ip_fetch(self, *args, **kwargs):
         pass
 
+    @defer.inlineCallbacks
     def parse(self, result, *args, **kwargs):
-        pass
+        yield
+
+    @defer.inlineCallbacks
+    def process_item(self, item):
+        try:
+            yield self.dbpool.runInteraction(self.do_replace, item)
+        # except pymysql.OperationalError:
+        #     if self.report_connection_error:
+        #         self.logger.error("Can't connect to MySQL")
+        #         self.report_connection_error = False
+        except:
+            print(traceback.format_exc())
+
+        # Return the item for the next stage
+        defer.returnValue(item)
+
+    @staticmethod
+    def do_replace(tx, item):
+        """Does the actual REPLACE INTO"""
+        sql = ""
+        args = (
+        )
+        tx.execute(sql, args)
 
     def ip_ext_get(self):
         self.ip = random.choice(self.ip_pool)
+
+    def completed(self, timeoutCall, passthrough):
+        if timeoutCall.active():
+            timeoutCall.cancel()
+        return passthrough
 
     def _download(self, request):
         if self.ip_ext:
@@ -126,12 +161,7 @@ class engine(object):
             response = agent.request(b"GET", request.encode('utf-8'), Headers(self.headers or {'User-Agent': []}))
             timeoutCall = reactor.callLater(self.settings.get('DOWNLOAD_TIMEOUT', 5), response.cancel)
 
-            def completed(passthrough):
-                if timeoutCall.active():
-                    timeoutCall.cancel()
-                return passthrough
-
-            response.addBoth(completed)
+            response.addBoth(self.completed, timeoutCall)
             return response
         else:
             agent = RedirectAgent(Agent(reactor))
@@ -139,12 +169,7 @@ class engine(object):
                                      Headers(self.headers or {'User-Agent': []}), None)
             timeoutCall = reactor.callLater(self.settings.get('DOWNLOAD_TIMEOUT', 5), response.cancel)
 
-            def completed(passthrough):
-                if timeoutCall.active():
-                    timeoutCall.cancel()
-                return passthrough
-
-            response.addBoth(completed)
+            response.addBoth(self.completed, timeoutCall)
             return response
 
     def _start(self):

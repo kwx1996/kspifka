@@ -1,3 +1,5 @@
+import pymysql
+
 SCHEDULER_DUPEFILTER_KEY = '{}s:dupefilter'
 SCHEDULER_DUPEFILTER_CLASS = 'kafka_normal_process.dupefilter.RFPDupeFilter'
 REDIS_PARAMS = {
@@ -17,3 +19,11 @@ BLOOMFILTER_BLOCK = 1
 BLOOMFILTER_SIZE = 31
 BLOOMFILTER_SEED = 6
 POOL_SIZE = 15
+
+conn_kwargs = {
+            'host': '127.0.0.1',
+            'user': 'root',
+            'password': '',
+            'database': '',
+            'cursorclass': pymysql.cursors.DictCursor
+        }
