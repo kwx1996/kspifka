@@ -1,7 +1,7 @@
 import pymysql
 
 SCHEDULER_DUPEFILTER_KEY = '{}s:dupefilter'
-SCHEDULER_DUPEFILTER_CLASS = 'kafka_normal_process.dupefilter.RFPDupeFilter'
+SCHEDULER_DUPEFILTER_CLASS = 'kspifka.dupefilter.RFPDupeFilter'
 REDIS_PARAMS = {
     'socket_timeout': 30,
     'socket_connect_timeout': 30,
@@ -11,7 +11,7 @@ REDIS_PARAMS = {
 
 DUPEFILTER_KEY = 'dupefilter:%(timestamp)s'
 
-SCHEDULER_QUEUE_CLASS = 'kafka_normal_process.queues.KafkaQueue'
+SCHEDULER_QUEUE_CLASS = 'kspifka.queues.KafkaQueue'
 KAFKA_DEFAULTS_HOST = 'localhost:9092'
 KAFKA_DEFAULTS_TOPIC = 'dytt'
 KAFKA_DEFAULTS_CONSUMER_GROUP = 'gm37'

@@ -177,7 +177,7 @@ class engine(object):
         nextcall_ = self.check
         self.slot_ = Slot(nextcall_)
         self.loop_ = self.slot_.heartbeat
-        self.loop_spider = self.loop.start(self.settings.get('CURRENT_REQUEST', 0.03))
+        self.loop_spider = self.loop.start(self.settings.get('CURRENT_REQUEST', 0.1))
         self.loop_check = self.loop_.start(self.settings.get('CHECK_INTERVAL', 1800))
         nextcall_retry = self.retry_fetch
         self.slot_retry = Slot(nextcall_retry)
