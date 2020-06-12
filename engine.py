@@ -124,7 +124,7 @@ class engine(object):
             endpoint = TCP4ClientEndpoint(reactor, self.ip.split(':')[0], int(self.ip.split(':')[1]))
             agent = ProxyAgent(endpoint)
             response = agent.request(b"GET", request.encode('utf-8'), Headers(self.headers or {'User-Agent': []}))
-            timeoutCall = reactor.callLater(1, response.cancel)
+            timeoutCall = reactor.callLater(self.settings.get('DOWNLOAD_TIMEOUT', 5), response.cancel)
 
             def completed(passthrough):
                 if timeoutCall.active():
@@ -137,7 +137,7 @@ class engine(object):
             agent = Agent(reactor)
             response = agent.request(b'GET', request.encode('utf-8'),
                                      Headers(self.headers or {'User-Agent': []}), None)
-            timeoutCall = reactor.callLater(1, response.cancel)
+            timeoutCall = reactor.callLater(self.settings.get('DOWNLOAD_TIMEOUT', 5), response.cancel)
 
             def completed(passthrough):
                 if timeoutCall.active():
