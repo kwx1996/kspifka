@@ -12,9 +12,9 @@ from twisted.internet.endpoints import TCP4ClientEndpoint
 from twisted.web.client import Agent, readBody, ProxyAgent, RedirectAgent
 from twisted.web.http_headers import Headers
 
-import kspifka.kafka_default_settings as defaults
-from kafka_scrapy.connection import get_redis
-from kspifka.utils import SettingsWrapper
+import kafka_default_settings as defaults
+from .connection import get_redis
+from .utils import SettingsWrapper
 from . import kafka_default_settings as default
 from .scheduler import Scheduler
 
@@ -56,9 +56,10 @@ class engine(object):
         self.headers = headers
         self.ip = None
         self.ext = ext
-        self.crawl_queue = set([])
+        self.crawl_queue = {}
         self.logger = logging.getLogger(__name__)
         self.db_type = db_type
+        self.retry_times = self.settings.get('RETRY_TIMES', 3)
 
     def set_up(self):
         if self.db_type:
@@ -73,21 +74,21 @@ class engine(object):
         self.scheduler.open()
 
     @defer.inlineCallbacks
-    def multithreading_fun(self, *args):
+    def multithreading_fun(self, fun, fun_, *args):
         out = defer.Deferred()
-        threads.deferToThread(self.fun, *args).addCallback(self.parse)
+        threads.deferToThread(fun, *args).addCallback(fun_)
         yield out
 
     def check(self):
-        if isinstance(self.scheduler.queue.partition, int):
+        if isinstance(self.scheduler.queue.partition_s, int):
             self._consume_offset = self.scheduler.queue.consumer.get_watermark_offsets(
                 partition=TopicPartition(topic=defaults.KAFKA_DEFAULTS_TOPIC,
-                                         partition=self.scheduler.queue.partition))[1]
+                                         partition=self.scheduler.queue.partition_s))[1]
             self.close()
 
-        elif isinstance(self.scheduler.queue.partition, list):
+        elif isinstance(self.scheduler.queue.partition_s, list):
             self._consumers_offset = []
-            for partition in self.scheduler.queue.partition:
+            for partition in self.scheduler.queue.partition_s:
                 self._consumers_offset.append(self.scheduler.queue.consumer.get_watermark_offsets(
                     partition=TopicPartition(topic=defaults.KAFKA_DEFAULTS_TOPIC, partition=partition))[1])
             self.close()
@@ -119,16 +120,13 @@ class engine(object):
 
     @defer.inlineCallbacks
     def parse(self, result, *args, **kwargs):
+
         yield
 
     @defer.inlineCallbacks
     def process_item(self, item):
         try:
             yield self.dbpool.runInteraction(self.do_replace, item)
-        # except pymysql.OperationalError:
-        #     if self.report_connection_error:
-        #         self.logger.error("Can't connect to MySQL")
-        #         self.report_connection_error = False
         except:
             print(traceback.format_exc())
 
@@ -146,28 +144,39 @@ class engine(object):
     def ip_ext_get(self):
         self.ip = random.choice(self.ip_pool)
 
-    def completed(self, timeoutCall, passthrough):
-        if timeoutCall.active():
-            timeoutCall.cancel()
-        return passthrough
+    def f(self):
+        return "Hopefully this will be called in 3 seconds or less"
+
+    def called(self, result, request):
+        if isinstance(request, tuple):
+            self.crawl_queue[request[0]] = request[1] + 1
+        else:
+            self.crawl_queue[request] = 1
+        if self.ip_ext:
+            try:
+                self.ip_pool.remove(self.ip)
+            except Exception:
+                self.logger.info('{} already remove'.format(self.ip))
+            if len(self.ip_pool) == 0:
+                self.ip_fetch()
+        print("{0} seconds later:".format(0.03), result, request)
 
     def _download(self, request):
         if self.ip_ext:
             self.ip_ext_get()
-            endpoint = TCP4ClientEndpoint(reactor, self.ip.split(':')[0], int(self.ip.split(':')[1]))
+            endpoint = TCP4ClientEndpoint(reactor, self.ip.split(':')[0], int(self.ip.split(':')[1]),
+                                          timeout=self.settings.get('DOWNLOAD_TIMEOUT', 5))
             agent = RedirectAgent(ProxyAgent(endpoint))
-            response = agent.request(b"GET", request.encode('utf-8'), Headers(self.headers or {'User-Agent': []}))
-            timeoutCall = reactor.callLater(self.settings.get('DOWNLOAD_TIMEOUT', 5), response.cancel)
-
-            response.addBoth(self.completed, timeoutCall)
+            response = agent.request(b"GET", request.encode('utf-8'),
+                                     Headers(self.headers or {'User-Agent': [random.choice(default.USER_AGENT_LIST)]}))
+            d = task.deferLater(reactor, self.settings.get('DOWNLOAD_TIMEOUT', 5), self.f)
+            d.addTimeout(3, reactor).addBoth(self.called, request)
             return response
         else:
-            agent = RedirectAgent(Agent(reactor))
+            agent = RedirectAgent(Agent(reactor, connectTimeout=self.settings.get('DOWNLOAD_TIMEOUT', 1000)))
             response = agent.request(b'GET', request.encode('utf-8'),
-                                     Headers(self.headers or {'User-Agent': []}), None)
-            timeoutCall = reactor.callLater(self.settings.get('DOWNLOAD_TIMEOUT', 5), response.cancel)
-
-            response.addBoth(self.completed, timeoutCall)
+                                     Headers(self.headers or {'User-Agent': [random.choice(default.USER_AGENT_LIST)]}),
+                                     None)
             return response
 
     def _start(self):
@@ -177,44 +186,54 @@ class engine(object):
         nextcall_ = self.check
         self.slot_ = Slot(nextcall_)
         self.loop_ = self.slot_.heartbeat
-        self.loop_spider = self.loop.start(self.settings.get('CURRENT_REQUEST', 0.1))
+        self.loop_spider = self.loop.start(self.settings.get('CURRENT_REQUEST', 0.3))
         self.loop_check = self.loop_.start(self.settings.get('CHECK_INTERVAL', 1800))
         nextcall_retry = self.retry_fetch
         self.slot_retry = Slot(nextcall_retry)
         self.loop_retry = self.slot_retry.heartbeat
-        self.loop_retry_ = self.loop_retry.start(0.1)
+        self.loop_retry_ = self.loop_retry.start(1)
 
+    @defer.inlineCallbacks
     def next_fetch(self):
         url = self.scheduler.next_request()
         if not url:
             return
         self._download(url).addCallback(self.succeed_access, url).addErrback(self._retry, url)
+        yield
 
     def _retry(self, e, url):
-        self.crawl_queue.add(url)
-        try:
-            self.ip_pool.remove(self.ip)
-        except Exception:
-            self.logger.info('{} already remove'.format(self.ip))
-        if len(self.ip_pool) == 0:
-            self.ip_fetch()
+        if isinstance(url, tuple):
+            self.crawl_queue[url[0]] = url[1] + 1
+        else:
+            self.crawl_queue[url] = 1
+        if self.ip_ext:
+            try:
+                self.ip_pool.remove(self.ip)
+            except Exception:
+                self.logger.info('{} already remove'.format(self.ip))
+            if len(self.ip_pool) == 0:
+                self.ip_fetch()
         self.logger.info('something wrong with {}'.format(e))
 
     @defer.inlineCallbacks
     def succeed_access(self, response, url):
         if url in self.crawl_queue:
-            self.crawl_queue.remove(url)
+            self.crawl_queue.pop(url)
         d = response
         if d.code in self.ban_request:
-            yield d
+            return
         elif d.code == 200:
-            d = readBody(d)
+            d = readBody(response)
             d.addCallback(self.parse)
-            yield d
+            yield
 
     def retry_fetch(self):
         if len(self.crawl_queue) > 0:
-            url = self.crawl_queue.pop()
-            self._download(url).addCallback(self.succeed_access, url).addErrback(self._retry, url)
+            url = self.crawl_queue.popitem()
+            if url[1] > self.retry_times:
+                # self.poll_msg(url[1])
+                return
+            else:
+                self._download(url[0]).addCallback(self.succeed_access, url[0]).addErrback(self._retry, url)
         else:
-            pass
+            return

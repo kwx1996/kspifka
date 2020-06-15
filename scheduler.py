@@ -1,4 +1,4 @@
-from kspifka import picklecompat
+import picklecompat
 from . import connection
 from . import kafka_default_settings as defaults
 from .utils import load_object
