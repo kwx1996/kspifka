@@ -39,7 +39,7 @@ class Slot:
 
 class engine(object):
     def __init__(self, topic=None, scheduler=Scheduler, settings=None,
-                 ip_ext=False, headers=None, ext=False, db_type=None, *args, **kwargs):
+                 ip_ext=False, headers=None, ext=False, db_type=None, defer_timeout=False, *args, **kwargs):
         super(engine, self).__init__(*args, **kwargs)
         self.logger = logging.getLogger()
         self.topic = topic
@@ -60,6 +60,7 @@ class engine(object):
         self.logger = logging.getLogger(__name__)
         self.db_type = db_type
         self.retry_times = self.settings.get('RETRY_TIMES', 3)
+        self.defer_timeout = defer_timeout
 
     def set_up(self):
         if self.db_type:
@@ -169,14 +170,19 @@ class engine(object):
             agent = RedirectAgent(ProxyAgent(endpoint))
             response = agent.request(b"GET", request.encode('utf-8'),
                                      Headers(self.headers or {'User-Agent': [random.choice(default.USER_AGENT_LIST)]}))
-            d = task.deferLater(reactor, self.settings.get('DOWNLOAD_TIMEOUT', 5), self.f)
-            d.addTimeout(3, reactor).addBoth(self.called, request)
+            if self.defer_timeout:
+                d = task.deferLater(reactor, self.settings.get('DOWNLOAD_TIMEOUT', 5), self.f)
+                d.addTimeout(3, reactor).addBoth(self.called, request)
             return response
         else:
             agent = RedirectAgent(Agent(reactor, connectTimeout=self.settings.get('DOWNLOAD_TIMEOUT', 1000)))
             response = agent.request(b'GET', request.encode('utf-8'),
                                      Headers(self.headers or {'User-Agent': [random.choice(default.USER_AGENT_LIST)]}),
                                      None)
+            # sometimes the spider will  block on one connection, so we need set a callback's timeout
+            if self.defer_timeout:
+                d = task.deferLater(reactor, self.settings.get('DOWNLOAD_TIMEOUT', 5), self.f)
+                d.addTimeout(3, reactor).addBoth(self.called, request)
             return response
 
     def _start(self):
