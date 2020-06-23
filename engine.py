@@ -255,12 +255,12 @@ class engine(object):
         url = self.parse_uri(request)
         agent = RedirectAgent(Agent(reactor, connectTimeout=10))
         response = agent.request(b'GET', url.encode('utf-8'),
-                                 Headers(self.headers or {'User-Agent': [random.choice(default.USER_AGENT_LIST)],
-                                                          }),
+                                 Headers(self.headers or {'User-Agent': [random.choice(default.USER_AGENT_LIST)]}),
                                  None)
         return response
 
     def parse_uri(self, url):
+        shem = re.split('//', url)[0]
         url = re.split('//', url)[1]
-        request = 'https://' + urllib.request.quote(url, encoding='utf-8')
+        request = shem + '://' + urllib.request.quote(url, encoding='utf-8')
         return request
