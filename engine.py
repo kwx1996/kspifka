@@ -124,8 +124,7 @@ class engine(object):
         pass
 
     @defer.inlineCallbacks
-    def parse(self, result, url, *args, **kwargs):
-
+    def parse(self, *args, **kwargs):
         yield
 
     @defer.inlineCallbacks
@@ -170,7 +169,7 @@ class engine(object):
         self.loop_ = self.slot_.heartbeat
         self.loop_spider = self.loop.start(self.settings.get('CURRENT_REQUEST', 0.2))
         self.loop_check = self.loop_.start(self.settings.get('CHECK_INTERVAL', 1800))
-        nextcall_retry = self.retry_fetch
+        nextcall_retry = self.r_fetch
         self.slot_retry = Slot(nextcall_retry)
         self.loop_retry = self.slot_retry.heartbeat
         self.loop_retry_ = self.loop_retry.start(self.settings.get('RETRY_REQUEST', 0.2))
@@ -192,9 +191,9 @@ class engine(object):
 
     def _retry(self, e, url, ip):
         self.logger.info('something wrong with {}'.format(e), url)
-        self.retry_queue(url, ip)
+        self.r_queue(url, ip)
 
-    def retry_queue(self, url, ip):
+    def r_queue(self, url, ip):
         self.logger.info(url)
         if isinstance(url, tuple):
             self.crawl_queue[url[0]] = url[1] + 1
@@ -219,7 +218,7 @@ class engine(object):
             d = ''
             yield d
 
-    def retry_fetch(self, ip=None):
+    def r_fetch(self, ip=None):
         if len(self.crawl_queue) > 0:
             url = self.crawl_queue.popitem()
             if url[1] > self.retry_times:
