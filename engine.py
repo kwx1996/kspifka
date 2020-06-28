@@ -5,6 +5,7 @@ import time
 import traceback
 import urllib.request
 
+import chardet
 from confluent_kafka.cimpl import TopicPartition
 from twisted.enterprise import adbapi
 from twisted.internet import defer, reactor
@@ -43,7 +44,7 @@ class Slot:
 
 class engine(object):
     def __init__(self, topic=None, scheduler=Scheduler, settings=None,
-                 ip_ext=False, headers=None, ext=False, db_type=None, *args, **kwargs):
+                 ip_ext=False, headers=None, ext=False, db_type=None, is_pic=False, *args, **kwargs):
         super(engine, self).__init__(*args, **kwargs)
         self.logger = logging.getLogger()
         self.topic = topic
@@ -65,6 +66,7 @@ class engine(object):
         self.db_type = db_type
         self.retry_times = self.settings.get('RETRY_TIMES', 7)
         self.queue = set([])
+        self.is_pic = is_pic
 
     def set_up(self):
         if self.db_type:
@@ -152,7 +154,7 @@ class engine(object):
         ip = random.choice(self.ip_pool)
         return ip
 
-    def _download(self, request, ip):
+    def download(self, request, ip):
         if ip:
             response = self.proxy_crawl(request, ip)
             return response
@@ -164,15 +166,15 @@ class engine(object):
         nextcall = self.next_fetch
         self.slot = Slot(nextcall)
         self.loop = self.slot.heartbeat
+        self.loop.start(self.settings.get('CURRENT_REQUEST', 0.2))
         nextcall_ = self.check
         self.slot_ = Slot(nextcall_)
         self.loop_ = self.slot_.heartbeat
-        self.loop_spider = self.loop.start(self.settings.get('CURRENT_REQUEST', 0.2))
-        self.loop_check = self.loop_.start(self.settings.get('CHECK_INTERVAL', 1800))
+        self.loop_.start(self.settings.get('CHECK_INTERVAL', 1800))
         nextcall_retry = self.r_fetch
         self.slot_retry = Slot(nextcall_retry)
         self.loop_retry = self.slot_retry.heartbeat
-        self.loop_retry_ = self.loop_retry.start(self.settings.get('RETRY_REQUEST', 0.2))
+        self.loop_retry.start(self.settings.get('RETRY_REQUEST', 0.2))
 
     @defer.inlineCallbacks
     def next_fetch(self, ip=None):
@@ -186,7 +188,7 @@ class engine(object):
             ip = self.ip_ext_get()
         url = url.replace('medium_jpg', 'large_jpg')
         self.logger.info('received {} from kafka'.format(url))
-        self._download(url, ip).addCallback(self.succeed_access, url).addErrback(self._retry, url, ip)
+        self.download(url, ip).addCallback(self.succeed_access, url).addErrback(self._retry, url, ip)
         yield
 
     def _retry(self, e, url, ip):
@@ -217,6 +219,14 @@ class engine(object):
             d.addCallback(self.parse, url)
             d = ''
             yield d
+
+    @defer.inlineCallbacks
+    def analyse(self, response, url):
+        if self.is_pic:
+            yield self.parse(response, url)
+        charset = chardet.detect(response)["encoding"]
+        response = response.decode(charset)
+        yield self.parse(response, url)
 
     def r_fetch(self, ip=None):
         if len(self.crawl_queue) > 0:
@@ -259,7 +269,7 @@ class engine(object):
         return response
 
     def parse_uri(self, url):
-        shem = re.split('//', url)[0]
-        url = re.split('//', url)[1]
+        shem = re.split('://', url)[0]
+        url = re.split('://', url)[1]
         request = shem + '://' + urllib.request.quote(url, encoding='utf-8')
         return request
