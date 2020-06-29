@@ -70,15 +70,18 @@ class engine(object):
 
     def set_up(self):
         if self.db_type:
-            conn_kwargs = self.settings.get('conn_kwargs', default.conn_kwargs)
-            self.dbpool = adbapi.ConnectionPool(self.db_type,
-                                                charset=self.settings.get('CHARSET', 'utf8'),
-                                                use_unicode=self.settings.get('USE_UNICODE', True),
-                                                connect_timeout=self.settings.get('CONNECT_TIMEOUT', 5),
-                                                **conn_kwargs)
+            self.db_install()
         self.server = get_redis(self.settings)
         self.scheduler = self._scheduler(self.server, self.settings)
         self.scheduler.open()
+
+    def db_install(self):
+        conn_kwargs = self.settings.get('conn_kwargs', default.conn_kwargs)
+        self.dbpool = adbapi.ConnectionPool(self.db_type,
+                                            charset=self.settings.get('CHARSET', 'utf8'),
+                                            use_unicode=self.settings.get('USE_UNICODE', True),
+                                            connect_timeout=self.settings.get('CONNECT_TIMEOUT', 5),
+                                            **conn_kwargs)
 
     @defer.inlineCallbacks
     def multithreading_fun(self, fun, fun_, *args):
@@ -133,11 +136,7 @@ class engine(object):
     def process_item(self, item):
         try:
             yield self.dbpool.runInteraction(self.do_replace, item)
-        # except pymysql.OperationalError:
-        #     if self.report_connection_error:
-        #         self.logger.error("Can't connect to MySQL")
-        #         self.report_connection_error = False
-        except:
+        except Exception:
             print(traceback.format_exc())
         # Return the item for the next stage
         defer.returnValue(item)

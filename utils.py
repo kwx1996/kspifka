@@ -16,12 +16,6 @@ def exception_handler(details):
     logger.info(''.format(**details))
 
 
-@backoff.on_exception(backoff.expo, requests.exceptions, max_tries=10, on_backoff=exception_handler)
-def _request(url, proxies=None, headers=None):
-    response = requests.get(url, proxies=proxies, headers=headers)
-    return response
-
-
 def load_object(path):
     try:
         dot = path.rindex('.')
@@ -54,9 +48,6 @@ def import_module(name, package=None):
 
 
 class CallLaterOnce:
-    """Schedule a function to be called in the next reactor loop, but only if
-    it hasn't been already scheduled since the last time it ran.
-    """
 
     def __init__(self, func, *a, **kw):
         self._func = func
@@ -79,9 +70,6 @@ class CallLaterOnce:
 
 
 class SettingsWrapper(object):
-    '''
-    Wrapper for loading settings files and merging them with overrides
-    '''
 
     my_settings = {}
     ignore = [
