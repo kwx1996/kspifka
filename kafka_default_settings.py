@@ -31,3 +31,6 @@ conn_kwargs = {
 NAME = ''
 
 CURRENT_REQUSET = 0.03  # request for per second( 1 / 0.03 ~= 33)
+
+HEADERS = {'User-Agent': ['Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:21.0) Gecko/20130331 Firefox/21.0']}
+

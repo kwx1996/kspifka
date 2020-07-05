@@ -1,23 +1,19 @@
 import logging
 import random
-import re
 import time
 import traceback
-import urllib.request
 
 import chardet
 from twisted.enterprise import adbapi
 from twisted.internet import defer, reactor
 from twisted.internet import task
-from twisted.internet import threads
-from twisted.internet.endpoints import TCP4ClientEndpoint
-from twisted.web.client import Agent, readBody, ProxyAgent, RedirectAgent
-from twisted.web.http_headers import Headers
+from twisted.web.client import readBody
 
 from kspifka.connection import get_redis
 from kspifka.offset_monitor import check
-from kspifka.utils import SettingsWrapper
+from kspifka.utils import SettingsWrapper, next_callable
 from . import kafka_default_settings as default
+from .downloader import Downloader
 from .scheduler import Scheduler
 
 logging.basicConfig(level=logging.NOTSET)
@@ -43,18 +39,17 @@ class Slot:
 
 class engine(object):
     def __init__(self, topic=None, scheduler=Scheduler, settings=None,
-                 ip_ext=False, headers=None, ext=False, db_type=None, is_pic=False, order=None, *args, **kwargs):
+                 ip_ext=False, ext=False, db_type=None, is_pic=False, order=None, *args, **kwargs):
         super(engine, self).__init__(*args, **kwargs)
         self.logger = logging.getLogger()
         self.topic = topic
+        self.slot = Slot()
         self._scheduler = scheduler
-        self.slot = None
         self.settings = SettingsWrapper().load(default=settings)
         self.start_time = time.time()
         self.ip_ext = ip_ext
         self.ban_request = []
         self.ip_pool = []
-        self.headers = headers
         self.ip = None
         self.ext = ext
         self.crawl_queue = {}
@@ -64,6 +59,7 @@ class engine(object):
         self.queue = set([])
         self.is_pic = is_pic
         self.order = order
+        self.downloader = Downloader(settings=settings)
 
     def set_up(self):
         if self.db_type:
@@ -80,12 +76,6 @@ class engine(object):
                                             connect_timeout=self.settings.get('CONNECT_TIMEOUT', 5),
                                             **conn_kwargs)
 
-    @defer.inlineCallbacks
-    def multithreading_fun(self, fun, fun_, *args):
-        out = defer.Deferred()
-        threads.deferToThread(fun, *args).addCallback(fun_)
-        yield out
-
     # a order,like 'sh kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group group_id'
     def _check(self):
         res = check(self.order)
@@ -93,9 +83,7 @@ class engine(object):
             self.close()
 
     def close(self):
-
         self.slot.close()
-        self.slot_.close()
         if reactor.running:
             self.dbpool.close()
             reactor.stop()
@@ -139,25 +127,21 @@ class engine(object):
 
     def download(self, request, ip):
         if ip:
-            response = self.proxy_crawl(request, ip)
+            url = request
+            response = self.downloader.proxy_crawl(url, ip, reactor)
             return response
         else:
-            response = self.normal_crawl(request)
+            url = request
+            response = self.downloader.normal_crawl(url, reactor)
             return response
 
     def _start(self):
-        nextcall = self.next_fetch
-        self.slot = Slot(nextcall)
-        self.loop = self.slot.heartbeat
+        self.loop = next_callable(self.next_fetch)
         self.loop.start(self.settings.get('CURRENT_REQUEST', 0.2))
-        nextcall_ = self._check
-        self.slot_ = Slot(nextcall_)
-        self.loop_ = self.slot_.heartbeat
+        self.loop_ = next_callable(self._check)
         self.loop_.start(self.settings.get('CHECK_INTERVAL', 1800))
-        nextcall_retry = self.r_fetch
-        self.slot_retry = Slot(nextcall_retry)
-        self.loop_retry = self.slot_retry.heartbeat
-        self.loop_retry.start(self.settings.get('RETRY_REQUEST', 0.2))
+        self.loop_r = next_callable(self.r_fetch())
+        self.loop_r.start(self.settings.get('RETRY_REQUEST', 0.2))
 
     @defer.inlineCallbacks
     def next_fetch(self, ip=None):
@@ -171,24 +155,6 @@ class engine(object):
         self.download(url, ip).addCallback(self.succeed_access, url).addErrback(self._retry, url, ip)
         yield
 
-    def _retry(self, e, url, ip):
-        self.logger.info('something wrong with {}'.format(e), url)
-        self.r_queue(url, ip)
-
-    def r_queue(self, url, ip):
-        self.logger.info(url)
-        if isinstance(url, tuple):
-            self.crawl_queue[url[0]] = url[1] + 1
-        else:
-            self.crawl_queue[url] = 1
-        if self.ip_ext:
-            try:
-                self.ip_pool.remove(ip)
-            except Exception:
-                self.logger.info('{} already remove'.format(ip))
-            if len(self.ip_pool) == 0:
-                self.ip_fetch()
-
     @defer.inlineCallbacks
     def succeed_access(self, response, url):
         d = response
@@ -200,13 +166,22 @@ class engine(object):
             d = ''
             yield d
 
-    @defer.inlineCallbacks
-    def analyse(self, response, url):
-        if self.is_pic:
-            yield self.parse(response, url)
-        charset = chardet.detect(response)["encoding"]
-        response = response.decode(charset)
-        yield self.parse(response, url)
+    def _retry(self, e, url, ip):
+        self.logger.info('something wrong with {}'.format(e), url)
+        self.r_queue(url, ip)
+
+    def r_queue(self, url, ip):
+        if isinstance(url, tuple):
+            self.crawl_queue[url[0]] = url[1] + 1
+        else:
+            self.crawl_queue[url] = 1
+        if self.ip_ext:
+            try:
+                self.ip_pool.remove(ip)
+            except Exception:
+                self.logger.info('{} already remove'.format(ip))
+            if len(self.ip_pool) == 0:
+                self.ip_fetch()
 
     def r_fetch(self, ip=None):
         if len(self.crawl_queue) > 0:
@@ -225,31 +200,17 @@ class engine(object):
     def r_download(self, request, ip):
         if ip:
             url = request
-            response = self.proxy_crawl(url, ip)
+            response = self.downloader.proxy_crawl(url, ip, reactor)
             return response
         else:
             url = request
-            response = self.normal_crawl(url)
+            response = self.downloader.normal_crawl(url, reactor)
             return response
 
-    def proxy_crawl(self, url, ip):
-        endpoint = TCP4ClientEndpoint(reactor, ip.split(':')[0], int(ip.split(':')[1]),
-                                      timeout=self.settings.get('DOWNLOAD_TIMEOUT', 10))
-        agent = ProxyAgent(endpoint)
-        response = agent.request(b"GET", re.findall('(.+?)\(', url)[0].encode('ascii'),
-                                 Headers(self.headers or {'User-Agent': [random.choice(default.USER_AGENT_LIST)]}))
-        return response
-
-    def normal_crawl(self, request):
-        url = self.parse_uri(request)
-        agent = RedirectAgent(Agent(reactor, connectTimeout=10))
-        response = agent.request(b'GET', url.encode('utf-8'),
-                                 Headers(self.headers or {'User-Agent': [random.choice(default.USER_AGENT_LIST)]}),
-                                 None)
-        return response
-
-    def parse_uri(self, url):
-        shem = re.split('://', url)[0]
-        url = re.split('://', url)[1]
-        request = shem + '://' + urllib.request.quote(url, encoding='utf-8')
-        return request
+    @defer.inlineCallbacks
+    def analyse(self, response, url):
+        if self.is_pic:
+            yield self.parse(response, url)
+        charset = chardet.detect(response)["encoding"]
+        response = response.decode(charset)
+        yield self.parse(response, url)

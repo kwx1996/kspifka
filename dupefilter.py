@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 class RFPDupeFilter:
     logger = logger
 
-    def __init__(self, server, key, debug=False, **kwargs):
+    def __init__(self, server, key, **kwargs):
         self.server = server
         self.key = key
         self.seeds = kwargs.get("seeds", defaults.BLOOMFILTER_SEED)

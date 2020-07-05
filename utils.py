@@ -4,6 +4,8 @@ import logging
 from builtins import object
 from importlib import _bootstrap
 
+from kspifka.engine import Slot
+
 log = logging.getLogger(__name__)
 
 logger = logging.getLogger()
@@ -157,3 +159,10 @@ class SettingsWrapper(object):
             the_dict[key] = value
 
         return the_dict
+
+
+def next_callable(fun):
+    nextcall = fun
+    slot = Slot(nextcall)
+    loop = slot.heartbeat
+    return loop
