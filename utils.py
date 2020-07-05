@@ -4,9 +4,6 @@ import logging
 from builtins import object
 from importlib import _bootstrap
 
-import backoff
-import requests
-
 log = logging.getLogger(__name__)
 
 logger = logging.getLogger()
@@ -47,30 +44,7 @@ def import_module(name, package=None):
     return _bootstrap._gcd_import(name[level:], package, level)
 
 
-class CallLaterOnce:
-
-    def __init__(self, func, *a, **kw):
-        self._func = func
-        self._a = a
-        self._kw = kw
-        self._call = None
-
-    def schedule(self, delay=0):
-        from twisted.internet import reactor
-        if self._call is None:
-            self._call = reactor.callLater(delay, self)
-
-    def cancel(self):
-        if self._call:
-            self._call.cancel()
-
-    def __call__(self):
-        self._call = None
-        return self._func(*self._a, **self._kw)
-
-
 class SettingsWrapper(object):
-
     my_settings = {}
     ignore = [
         '__builtins__',

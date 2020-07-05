@@ -1,6 +1,6 @@
-import picklecompat
 from . import connection
 from . import kafka_default_settings as defaults
+from . import picklecompat
 from .utils import load_object
 
 
@@ -32,9 +32,9 @@ class Scheduler(object):
         self.consumer = connection.create_consumer(name=self.settings.get('KAFKA_DEFAULTS_CONSUMER_GROUP',
                                                                           defaults.KAFKA_DEFAULTS_CONSUMER_GROUP),
                                                    bootstrap_servers=self.settings.get('KAFKA_DEFAULTS_HOST',
-                                                   defaults.KAFKA_DEFAULTS_HOST))
+                                                                                       defaults.KAFKA_DEFAULTS_HOST))
         self.producer = connection.create_producer(bootstrap_servers=self.settings.get('KAFKA_DEFAULTS_HOST',
-                                                   defaults.KAFKA_DEFAULTS_HOST))
+                                                                                       defaults.KAFKA_DEFAULTS_HOST))
         try:
             self.df = load_object(self.dupefilter_cls)(
                 server=self.server,

@@ -55,13 +55,6 @@ class KafkaQueue(Base):
         """Pop a request"""
 
         request = self.consumer.poll(0)
-        if len(self.consumer.assignment()) > 0:
-            if len(self.consumer.assignment()) == 0:
-                self.partition = self.consumer.assignment()[0].partition
-            else:
-                self.partition = []
-                for partitions in self.consumer.assignment():
-                    self.partition.append(partitions[0].partition)
         if request:
             data = self._decode_request(request.value())
 

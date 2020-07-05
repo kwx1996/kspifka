@@ -6,7 +6,6 @@ import traceback
 import urllib.request
 
 import chardet
-from confluent_kafka.cimpl import TopicPartition
 from twisted.enterprise import adbapi
 from twisted.internet import defer, reactor
 from twisted.internet import task
@@ -15,8 +14,8 @@ from twisted.internet.endpoints import TCP4ClientEndpoint
 from twisted.web.client import Agent, readBody, ProxyAgent, RedirectAgent
 from twisted.web.http_headers import Headers
 
-import kspifka.kafka_default_settings as defaults
 from kspifka.connection import get_redis
+from kspifka.offset_monitor import check
 from kspifka.utils import SettingsWrapper
 from . import kafka_default_settings as default
 from .scheduler import Scheduler
@@ -44,7 +43,7 @@ class Slot:
 
 class engine(object):
     def __init__(self, topic=None, scheduler=Scheduler, settings=None,
-                 ip_ext=False, headers=None, ext=False, db_type=None, is_pic=False, *args, **kwargs):
+                 ip_ext=False, headers=None, ext=False, db_type=None, is_pic=False, order=None, *args, **kwargs):
         super(engine, self).__init__(*args, **kwargs)
         self.logger = logging.getLogger()
         self.topic = topic
@@ -52,10 +51,7 @@ class engine(object):
         self.slot = None
         self.settings = SettingsWrapper().load(default=settings)
         self.start_time = time.time()
-        self.consume_offset = 0
-        self.consumers_offset = []
         self.ip_ext = ip_ext
-        self.check_times = 0
         self.ban_request = []
         self.ip_pool = []
         self.headers = headers
@@ -67,6 +63,7 @@ class engine(object):
         self.retry_times = self.settings.get('RETRY_TIMES', 7)
         self.queue = set([])
         self.is_pic = is_pic
+        self.order = order
 
     def set_up(self):
         if self.db_type:
@@ -89,31 +86,19 @@ class engine(object):
         threads.deferToThread(fun, *args).addCallback(fun_)
         yield out
 
-    def check(self):
-        if isinstance(self.scheduler.queue.partition_s, int):
-            self._consume_offset = self.scheduler.queue.consumer.get_watermark_offsets(
-                partition=TopicPartition(topic=defaults.KAFKA_DEFAULTS_TOPIC,
-                                         partition=self.scheduler.queue.partition_s))[1]
-            self.close()
-
-        elif isinstance(self.scheduler.queue.partition_s, list):
-            self._consumers_offset = []
-            for partition in self.scheduler.queue.partition_s:
-                self._consumers_offset.append(self.scheduler.queue.consumer.get_watermark_offsets(
-                    partition=TopicPartition(topic=defaults.KAFKA_DEFAULTS_TOPIC, partition=partition))[1])
+    # a order,like 'sh kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group group_id'
+    def _check(self):
+        res = check(self.order)
+        if res == 'finished':
             self.close()
 
     def close(self):
-        if self.consumers_offset == self._consumers_offset:
-            self.check_times += 1
-            if self.check_times >= 2:
-                self.slot.close()
-                self.slot_.close()
-                if reactor.running:
-                    self.dbpool.close()
-                    reactor.stop()
-        else:
-            self.consumers_offset = self._consumers_offset
+
+        self.slot.close()
+        self.slot_.close()
+        if reactor.running:
+            self.dbpool.close()
+            reactor.stop()
 
     def open(self):
         self.set_up()
@@ -145,8 +130,7 @@ class engine(object):
     def do_replace(tx, item):
         """Does the actual REPLACE INTO"""
         sql = ""
-        args = (
-        )
+        args = ()
         tx.execute(sql, args)
 
     def ip_ext_get(self):
@@ -166,7 +150,7 @@ class engine(object):
         self.slot = Slot(nextcall)
         self.loop = self.slot.heartbeat
         self.loop.start(self.settings.get('CURRENT_REQUEST', 0.2))
-        nextcall_ = self.check
+        nextcall_ = self._check
         self.slot_ = Slot(nextcall_)
         self.loop_ = self.slot_.heartbeat
         self.loop_.start(self.settings.get('CHECK_INTERVAL', 1800))
@@ -177,15 +161,12 @@ class engine(object):
 
     @defer.inlineCallbacks
     def next_fetch(self, ip=None):
-
         url = self.scheduler.next_request()
-
         if not url:
             self.logger.info('get nothing from kafka')
             return
         if self.ip_ext:
             ip = self.ip_ext_get()
-        url = url.replace('medium_jpg', 'large_jpg')
         self.logger.info('received {} from kafka'.format(url))
         self.download(url, ip).addCallback(self.succeed_access, url).addErrback(self._retry, url, ip)
         yield
